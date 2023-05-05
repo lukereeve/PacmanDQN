@@ -25,11 +25,12 @@ from collections import deque
 import tensorflow as tf
 from DQN import *
 
+
 params = {
     # Model backups
-    'load_file': None,
-    'save_file': None,
-    'save_interval' : 10000, 
+    'load_file': 'saves', #'saves/model-weights_25000_705455_9652.index'
+    'save_file': 'weights',
+    'save_interval' : 20000, 
 
     # Training parameters
     'train_start': 5000,    # Episodes before training starts
@@ -44,15 +45,17 @@ params = {
     # Epsilon value (epsilon-greedy)
     'eps': 1.0,             # Epsilon start value
     'eps_final': 0.1,       # Epsilon end value
-    'eps_step': 10000       # Epsilon steps between start and end (linear)
+    'eps_step': 50000       # Epsilon steps between start and end (linear)
 }                     
 
-
+# Disable eager execution (TensorFlow v2.x)
+# tf.compat.v1.disable_eager_execution()
 
 class PacmanDQN(game.Agent):
     def __init__(self, args):
 
         print("Initialise DQN Agent")
+        self.cnt = 0  # Initialize the cnt attribute
 
         # Load parameters from user-given arguments
         self.params = params
@@ -60,10 +63,21 @@ class PacmanDQN(game.Agent):
         self.params['height'] = args['height']
         self.params['num_training'] = args['numTraining']
 
-        # Start Tensorflow session
-        gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.1)
-        self.sess = tf.Session(config = tf.ConfigProto(gpu_options = gpu_options))
-        self.qnet = DQN(self.params)
+        # Initialize DQN model
+        self.qnet = DQN(params)
+
+        self.checkpoint = tf.train.Checkpoint(model=self.qnet)
+
+         # Create the model's variables by calling it with a dummy input
+        # dummy_input_shape = (1, self.params['width'], self.params['height'], 6)  # Example shape (batch, width, height, channels)
+        # dummy_input = tf.zeros(dummy_input_shape)
+        # _ = self.qnet(dummy_input)  # This creates the model's variables
+
+        # Load pretrained weights if specified in params
+        if 'load_file' in params and params['load_file'] is not None:
+            # self.qnet.load_ckpt(params['load_file'])
+            self.checkpoint.restore(tf.train.latest_checkpoint(params['load_file']))
+            print('restoration of weights was successful')
 
         # time started
         self.general_record_time = time.strftime("%a_%d_%b_%Y_%H_%M_%S", time.localtime())
@@ -72,7 +86,7 @@ class PacmanDQN(game.Agent):
         self.cost_disp = 0     
 
         # Stats
-        self.cnt = self.qnet.sess.run(self.qnet.global_step)
+        self.cnt = self.qnet.global_step.numpy()
         self.local_cnt = 0
 
         self.numeps = 0
@@ -82,21 +96,14 @@ class PacmanDQN(game.Agent):
 
         self.replay_mem = deque()
         self.last_scores = deque()
-
+        self.c = 0
+        self.file_name = ''
 
     def getMove(self, state):
         # Exploit / Explore
         if np.random.rand() > self.params['eps']:
             # Exploit action
-            self.Q_pred = self.qnet.sess.run(
-                self.qnet.y,
-                feed_dict = {self.qnet.x: np.reshape(self.current_state,
-                                                     (1, self.params['width'], self.params['height'], 6)), 
-                             self.qnet.q_t: np.zeros(1),
-                             self.qnet.actions: np.zeros((1, 4)),
-                             self.qnet.terminals: np.zeros(1),
-                             self.qnet.rewards: np.zeros(1)})[0]
-
+            self.Q_pred = self.qnet(np.reshape(self.current_state, (1, self.params['width'], self.params['height'], 6)))[0]
             self.Q_global.append(max(self.Q_pred))
             a_winner = np.argwhere(self.Q_pred == np.amax(self.Q_pred))
 
@@ -170,8 +177,17 @@ class PacmanDQN(game.Agent):
             # Save model
             if(params['save_file']):
                 if self.local_cnt > self.params['train_start'] and self.local_cnt % self.params['save_interval'] == 0:
-                    self.qnet.save_ckpt('saves/model-' + params['save_file'] + "_" + str(self.cnt) + '_' + str(self.numeps))
+                    # self.qnet.save_ckpt('saves/model-' + params['save_file'] + "_" + str(self.cnt) + '_' + str(self.numeps))
+                    # Save the model weights using the object-based saver
+                    # file_name_last = self.file_name
+                    # self.file_name = 'model-' + params['save_file'] + "_" + str(self.cnt) + '_' + str(self.numeps) + '-1'
+                    # self.checkpoint.save(file_prefix='saves/model-' + params['save_file'] + "_" + str(self.cnt) + '_' + str(self.numeps))
+                    self.checkpoint.save(file_prefix='saves/model-' + params['save_file'] + "_" + str(self.cnt) + '_' + str(self.numeps))
                     print('Model saved')
+                    # files.download(file_name)
+                    # if self.c > 0:
+                    #     files.download(file_name_last) # + '.data-00000-of-00001'
+                    # self.c += 1
 
             # Train
             self.train()
@@ -230,7 +246,8 @@ class PacmanDQN(game.Agent):
             batch_n = np.array(batch_n)
             batch_t = np.array(batch_t)
 
-            self.cnt, self.cost_disp = self.qnet.train(batch_s, batch_a, batch_t, batch_n, batch_r)
+            self.cost_disp = self.qnet.train_step(batch_s, batch_a, batch_t, batch_n, batch_r)
+            self.cnt = self.qnet.global_step.numpy()
 
 
     def get_onehot(self, actions):
